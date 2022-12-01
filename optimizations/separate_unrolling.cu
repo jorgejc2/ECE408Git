@@ -16,108 +16,58 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
    }
 }
 
-__constant__ float mask_kernel[3136];
-
 static int max_threads_per_block;
 static int max_shared_size;
 static int warp_size;
 
-__global__ void conv_forward_kernel_shared_mem(float *output, const float *input, const float *mask, const int Batch, const int Map_out, const int Channel, const int Height, const int Width, const int K)
-{
-    /*
-    Modify this function to implement the forward pass described in Chapter 16.
-    We have added an additional dimension to the tensors to support an entire mini-batch
-    The goal here is to be correct AND fast.
+__constant__ float mask_kernel[3136];
 
-    Function paramter definitions:
-    output - output
-    input - input
-    mask - convolution kernel
-    Batch - batch_size (number of images in x)
-    Map_out - number of output feature maps
-    Channel - number of input feature maps
-    Height - input height dimension
-    Width - input width dimension
-    K - kernel height and width (K x K)
-    */
+__global__ void unroll_Kernel (int C, int H, int W, int K, const float* X, float* X_unroll) {
+    // C = number of channels which should always be 3
+    // H = height of input images
+    // W = width of input images
+    // n = current batch sample
+    // X = array to a batch's input images, an image for each channel (so 3 images)
+    // X_unroll = output where the input images will get mapped to
+    // if ((threadIdx.x + threadIdx.y + threadIdx.z == 0) && (blockIdx.x + blockIdx.y + blockIdx.z == 0))
+        // printf("Unroll kernel runs");
+    int c, s, h_out, w_out, h_unroll, w_unroll, w_base, p, q;
+    int t = blockIdx.x * UNROLL_BLOCK_SIZE + threadIdx.x;
+    int H_out = H - K + 1;
+    int W_out = W - K + 1;
+    int W_unroll = H_out * W_out;
+    int H_unroll = C*K*K;
 
-    int tile_width = blockDim.x;
+    int n = blockIdx.y; // the current batch sample
 
-    const int Height_out = Height - K + 1;
-    const int Width_out = Width - K + 1;
-    const int W_grid = ceil((float)Width_out / tile_width);
-    const int H_grid = ceil((float)Height_out / tile_width);
+    // #define X_unroll_output(i1, i0) X_unroll[(i1) * (C * K * K) + (i0)]
+    #define X_unroll_output(i2, i1, i0) X_unroll[(i2) * (W_out*H_out*C*K*K) + (i1) * (W_out * H_out) + (i0)]
+    // #define X_input(i2, i1, i0) X[(i2) * (C * W) + (i1) * W + (i0)]
+    #define in_4d(i3, i2, i1, i0) X[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
 
-    // We have some nice #defs for you below to simplify indexing. Feel free to use them, or create your own.
-    // An example use of these macros:
-    // float a = in_4d(0,0,0,0)
-    // out_4d(0,0,0,0) = a
+    if (t < C * W_unroll) {
+        c = t / W_unroll; // channel based on index
+        s = t % W_unroll; // section currently working with 
+        // c = t / H_unroll; // channel based on index
+        // s = t % H_unroll; // section currently working with 
+        h_out = s / W_out;
+        w_out = s % W_out;
+        // h_unroll = h_out * W_out + w_out;
+        w_unroll = h_out * W_out + w_out;
+        w_base = c * K * K;
 
-    #define out_4d(i3, i2, i1, i0) output[(i3) * (Map_out * Height_out * Width_out) + (i2) * (Height_out * Width_out) + (i1) * (Width_out) + i0]
-    #define in_4d(i3, i2, i1, i0) input[(i3) * (Channel * Height * Width) + (i2) * (Height * Width) + (i1) * (Width) + i0]
-    #define mask_4d(i3, i2, i1, i0) mask[(i3) * (Channel * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
-    #define const_mask_4d(i3, i2, i1, i0) mask_kernel[(i3) * (Channel * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
-
-    // Insert your GPU convolution kernel code here
-
-    int n, m , h0, w0, h_base, w_base, h, w;
-    int X_tile_width = tile_width + K - 1;
-    extern __shared__ float shmem[];
-    float* X_shared = &shmem[0];
-    float* W_shared = &shmem[X_tile_width * X_tile_width];
-    n = blockIdx.x; // current batch sample
-    m = blockIdx.y; // current map output feature
-    h0 = threadIdx.y; 
-    w0 = threadIdx.x;
-    h_base = (blockIdx.z/W_grid)*tile_width; // vertical base out data index for the block
-    w_base = (blockIdx.z % W_grid)*tile_width; // horizontal base out data index for the block 
-    h = h_base + h0;
-    w = w_base + w0;
-
-    #define x_share(i1, i0) X_shared[(i1)*(X_tile_width) + (i0)]
-    #define w_share(i1, i0) W_shared[(i1)*(K) + (i0)]
-
-    float acc = 0; // initialize output result
-
-    /* iterate through all the channels */
-    for (int c = 0; c < Channel; c++) {
-        if ((h0 < K) && (w0 < K)) {
-            // w_share(h0, w0) = mask_4d(m, c, h0, w0);
-            w_share(h0, w0) = const_mask_4d(m, c, h0, w0);
-        }
-        // else
-        //     W_shared[h0, w0] = 0;
-        // __syncthreads();
-
-        for (int i = h; i < h_base + X_tile_width; i += tile_width) {
-            for (int j = w; j < w_base + X_tile_width; j += tile_width) {
-                if ((i < Height) && (j < Width)) {
-                    x_share(i - h_base, j - w_base) = in_4d(n, c, i, j);
-                }
-                else {
-                    x_share(i - h_base, j - w_base) = 0;
-                }
+        for (p = 0; p < K; p++) {
+            for (q = 0; q < K; q++) {
+                // w_unroll = w_base + p*K + q;
+                h_unroll = w_base + p*K + q;
+                // X_output(h_unroll, w_unroll) = X_input(c, h_out + p, w_out + q);
+                X_unroll_output(n, h_unroll, w_unroll) = in_4d(n, c, h_out + p, w_out + q);
             }
         }
-        __syncthreads();
+    }
 
-        for (int p = 0; p < K; p++) {
-            for (int q = 0; q < K; q++) {
-                acc += x_share(h0 + p, w0 + q) * w_share(p, q);
-            }
-        }
-        __syncthreads();
-    }
-    if ((h < Height_out) && (w < Width_out)) {
-        out_4d(n, m, h, w) = acc;
-    }
-    
-    #undef out_4d
+    #undef X_unroll_output
     #undef in_4d
-    #undef mask_4d
-    #undef x_share
-    #undef w_share
-    #undef const_mask_4d
 }
 
 /* code for register tiling of matrix multiplication */
@@ -168,17 +118,9 @@ int curr_batch = blockIdx.z;
   for (unsigned int tileIdx = 0; tileIdx < ceil(K/(1.0 * TILE_SZ_RATIO)); ++tileIdx) {
     // Load the tile of B into shared memory
     if (tileIdx * TILE_SZ_RATIO + i < K && col + j < N) {
-        int curr_channel = (tileIdx * TILE_SZ_RATIO + i) / (K_in*K_in);
-        int m = (col + j) % W_out;
-        int n = (col + j) / W_out;
-        int p = ((tileIdx * TILE_SZ_RATIO + i) - (curr_channel*K_in*K_in)) % K_in;
-        int q = ((tileIdx * TILE_SZ_RATIO + i) - (curr_channel*K_in*K_in)) / K_in;
-        int x = m + p;
-        int y = n + q;
-        //B_s[i][j] = B(curr_batch, tileIdx * TILE_SZ_RATIO + i, col + j);
-        B_s[i][j] = in_4d(curr_batch, curr_channel, y, x);
+        B_s[i][j] = B(curr_batch, tileIdx * TILE_SZ_RATIO + i, col + j);
     } else {
-      B_s[i][j] = 0;
+        B_s[i][j] = 0;
     }
     __syncthreads();
     // Loop over elements inside the tile
@@ -209,7 +151,7 @@ int curr_batch = blockIdx.z;
 #undef B
 #undef C
 }
-
+	
 __host__ void GPUInterface::conv_forward_gpu_prolog(const float *host_output, const float *host_input, const float *host_mask, float **device_output_ptr, float **device_input_ptr, float **device_mask_ptr, const int Batch, const int Map_out, const int Channel, const int Height, const int Width, const int K)
 {
     // Allocate memory and copy over the relevant data structures to the GPU
@@ -231,19 +173,16 @@ __host__ void GPUInterface::conv_forward_gpu_prolog(const float *host_output, co
     int outputSize = Batch*Map_out*Height_out*Width_out*sizeof(float);
     int maskSize = Map_out*Channel*K*K*sizeof(float);
     cudaMalloc((void **)device_input_ptr, inputSize);
+    cudaMalloc((void **)device_mask_ptr, maskSize);
     cudaMalloc((void **)device_output_ptr, outputSize);
 
     /* optimization that places mask into constant memory */
     int kernel_size = sizeof(float) * Map_out * Channel * K * K;
+    // cudaMemcpyToSymbol(mask_kernel, host_mask, kernel_size);
 
     cudaMemcpy(*device_input_ptr, host_input, inputSize, cudaMemcpyHostToDevice);
+    cudaMemcpy(*device_mask_ptr, host_mask, maskSize, cudaMemcpyHostToDevice);
 
-    if(Channel == 1){
-      cudaMemcpyToSymbol(mask_kernel, host_mask, kernel_size);
-    }else{
-      cudaMalloc((void **)device_mask_ptr, maskSize);
-      cudaMemcpy(*device_mask_ptr, host_mask, maskSize, cudaMemcpyHostToDevice);
-    }
 }
 
 
@@ -253,45 +192,32 @@ __host__ void GPUInterface::conv_forward_gpu(float *device_output, const float *
     int H_out = Height - K + 1;
     int H_unroll = Channel * K * K;
     int W_unroll = H_out * W_out;
+    // float* X_unrolled = (float*)malloc(W_unroll * H_unroll * sizeof(float));
+    float* X_unrolled_device;
+    
+    gpuErrchk(cudaMalloc((void **)&X_unrolled_device, sizeof(float)*W_unroll*H_unroll*Batch));
 
+    // printf("Global memory is %lu\n", sizeof(float) * W_unroll * H_unroll * Batch);
+    // printf("Gemm: gridx = %lu; gridy = %lu; gridz = %lu\n", (unsigned long)(ceil(Map_out / (1.0*TILE_SZ_A))), (unsigned long)(ceil(W_unroll / (1.0*TILE_SZ_B))), (unsigned long)(Batch));
+    // printf("Shared memory size is %d", sizeof(float)*TILE_SZ_RATIO*TILE_SZ_B);
 
-    if(Channel == 1){
-      get_device_properties();
-      int optimal_tile_width = sqrt(max_threads_per_block);
-      int num_blocks = -1;
-      while((optimal_tile_width * optimal_tile_width) > warp_size) {
-          int shared_mem_size = sizeof(float) * ((optimal_tile_width + K - 1) * (optimal_tile_width + K - 1) + K*K);
-          
-          if (shared_mem_size > max_shared_size) {
-              optimal_tile_width /= 2;
-              continue;
-          }
+    /* now throw it into the matrix multiplication */
 
-          else
-              break;
-      }
-      optimal_tile_width = 16;
-      printf("Optimal tile width is %d", optimal_tile_width);
-      // Set the kernel dimensions and call the kernel
-      int N = Batch; // blockDim.x will corresponds to the batch sample
-      int M = Map_out; // blockDim.y corresponds to the output feature
-      int W_grid = ceil((float)W_out / optimal_tile_width);
-      int H_grid = ceil((float)H_out / optimal_tile_width);
-      int Z = W_grid * H_grid; // the current output tile to be computed in the output feature
-
-      dim3 blockDim(optimal_tile_width, optimal_tile_width, 1);
-      dim3 gridDim(N, M, Z);
-
-      size_t shmem_size = sizeof(float) * ((optimal_tile_width + K - 1) * (optimal_tile_width + K - 1) + K*K);
-      conv_forward_kernel_shared_mem<<<gridDim, blockDim, shmem_size>>>(device_output, device_input, device_mask, Batch, Map_out, Channel, Height, Width, K);
-
-    }else{
-      dim3 dimGrid(ceil(Map_out / (1.0*TILE_SZ_A)), ceil(W_unroll / (1.0*TILE_SZ_B)), Batch);
-      dim3 dimBlock(TILE_SZ_A, 1, 1);
-      mygemm<<<dimGrid, dimBlock>>>(device_output, device_mask, device_input, Map_out, Channel*K*K, H_out*W_out, K, Channel, Height, Width);
-    }
+    int num_blocks = ceil((float)(H_out*W_out*Channel) / UNROLL_BLOCK_SIZE);
+    dim3 dimUGrid(num_blocks, Batch, 1);
+    dim3 dimUBlock(UNROLL_BLOCK_SIZE, 1, 1);
+    unroll_Kernel<<<dimUGrid, dimUBlock>>>(Channel, Height, Width, K, device_input, X_unrolled_device);
     // gpuErrchk( cudaPeekAtLastError() );
     // gpuErrchk( cudaDeviceSynchronize() );
+
+    dim3 dimGrid(ceil(Map_out / (1.0*TILE_SZ_A)), ceil(W_unroll / (1.0*TILE_SZ_B)), Batch);
+    dim3 dimBlock(TILE_SZ_A, 1, 1);
+    mygemm<<<dimGrid, dimBlock>>>(device_output, device_mask, X_unrolled_device, Map_out, Channel*K*K, H_out*W_out, K, Channel, Height, Width);
+    // gpuErrchk( cudaPeekAtLastError() );
+    // gpuErrchk( cudaDeviceSynchronize() );
+    cudaDeviceSynchronize();
+
+    cudaFree(X_unrolled_device);
 }
 
 
@@ -302,13 +228,13 @@ __host__ void GPUInterface::conv_forward_gpu_epilog(float *host_output, float *d
     int outputSize = Batch*Map_out*Height_out*Width_out*sizeof(float);
 
     // Copy the output back to host
-    cudaMemcpy(host_output, device_output, outputSize, cudaMemcpyDeviceToHost);    
+    cudaMemcpy(host_output, device_output, outputSize, cudaMemcpyDeviceToHost);
 
     // Free device memory
     cudaFree(device_output);
     cudaFree(device_input);
+    cudaFree(device_mask);
 
-    if(Channel == 4) cudaFree(device_mask);
 }
 
 __host__ void GPUInterface::get_device_properties()
