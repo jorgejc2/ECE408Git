@@ -125,10 +125,7 @@ __global__ void unroll_Kernel (int C, int H, int W, int K, const float* X, float
 
     int n = curr_batch;
     
-
-    // #define X_unroll_output(i1, i0) X_unroll[(i1) * (C * K * K) + (i0)]
-    #define X_unroll_output(i2, i1, i0) X_unroll[(i2) * (W_out*H_out*C*K*K) + (i1) * (W_out * H_out) + (i0)]
-    // #define X_input(i2, i1, i0) X[(i2) * (C * W) + (i1) * W + (i0)]
+    #define X_unroll_output(i1, i0) X_unroll[(i1) * (W_out * H_out) + (i0)]
     #define in_4d(i3, i2, i1, i0) X[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
 
     if (t < C * W_unroll) {
@@ -147,7 +144,7 @@ __global__ void unroll_Kernel (int C, int H, int W, int K, const float* X, float
                 // w_unroll = w_base + p*K + q;
                 h_unroll = w_base + p*K + q;
                 // X_output(h_unroll, w_unroll) = X_input(c, h_out + p, w_out + q);
-                X_unroll_output(n, h_unroll, w_unroll) = in_4d(n, c, h_out + p, w_out + q);
+                X_unroll_output(h_unroll, w_unroll) = in_4d(n, c, h_out + p, w_out + q);
             }
         }
     }
@@ -198,7 +195,7 @@ __global__ void matrixMultiply(const float* A, const float* B, float* __restrict
       Mds[ty][tx] = 0;
 
     if (((ph*TILE_WIDTH + ty) < numBRows) && (col < numBColumns))
-      Nds[ty][tx] = B[currBatch*(numBRows * numBColumns) + (ph*TILE_WIDTH + ty)*numBColumns + col];
+      Nds[ty][tx] = B[(ph*TILE_WIDTH + ty)*numBColumns + col];
     else
       Nds[ty][tx] = 0;
     __syncthreads();
