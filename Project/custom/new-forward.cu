@@ -231,11 +231,11 @@ __global__ void matrixRegisterTiling(float * __restrict__ c, //<! [out] and MxN 
 
 #define in_4d(i3, i2, i1, i0) b[(i3) * (Channel * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
 
-#if (OPTIMIZATION == 4)
+#if (OPTIMIZATION < 5)
   int curr_batch = currBatch;
 #endif
 
-#if (OPTIMIZATION == 5 || OPTIMIZATION == 6 )
+#if (OPTIMIZATION >= 5)
   int curr_batch = blockIdx.z;
 #endif
 
