@@ -15,7 +15,7 @@
 ** OPTIMIZATION 5: Kernel Fusion for OPTIMIZATION 4
 ** OPTIMIZATION 6: Multiple Kernel Implementations for Different Layer Sizes
 */
-#define OPTIMIZATION 0  // select an optimization 0 to 6
+#define OPTIMIZATION 3  // select an optimization 0 to 6
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
@@ -106,8 +106,8 @@ __global__ void conv_forward_kernel(float *output, const float *input, const flo
     #undef mask_4d
     #undef const_mask_4d
 }
+__global__ void unroll_Kernel (int C, int H, int W, int K, const float* X, float* X_unroll, int curr_batch) {
 
-__global__ void unroll_Kernel (int C, int H, int W, int K, const float* X, float* X_unroll) {
     // C = number of channels which should always be 3
     // H = height of input images
     // W = width of input images
@@ -123,7 +123,8 @@ __global__ void unroll_Kernel (int C, int H, int W, int K, const float* X, float
     int W_unroll = H_out * W_out;
     int H_unroll = C*K*K;
 
-    int n = blockIdx.y; // the current batch sample
+    int n = curr_batch;
+    
 
     // #define X_unroll_output(i1, i0) X_unroll[(i1) * (C * K * K) + (i0)]
     #define X_unroll_output(i2, i1, i0) X_unroll[(i2) * (W_out*H_out*C*K*K) + (i1) * (W_out * H_out) + (i0)]
@@ -503,25 +504,25 @@ __host__ void GPUInterface::conv_forward_gpu(float *device_output, const float *
     float* X_unrolled_device;
     
     /* unfortunately with a batch size of 10000, a lot of memory must be allocated for the batches to be parallelized, thus they must be done serially */
-    if (Batch < 10000) {
+    // if (Batch < 10000) {
 
-      gpuErrchk(cudaMalloc((void **)&X_unrolled_device, sizeof(float)*W_unroll*H_unroll*Batch));
+    //   gpuErrchk(cudaMalloc((void **)&X_unrolled_device, sizeof(float)*W_unroll*H_unroll*Batch));
 
-      int num_blocks = ceil((float)(H_out*W_out*Channel) / UNROLL_BLOCK_SIZE);
-      dim3 dimUGrid(num_blocks, Batch, 1);
-      dim3 dimUBlock(UNROLL_BLOCK_SIZE, 1, 1);
-      unroll_Kernel<<<dimUGrid, dimUBlock>>>(Channel, Height, Width, K, device_input, X_unrolled_device);
+    //   int num_blocks = ceil((float)(H_out*W_out*Channel) / UNROLL_BLOCK_SIZE);
+    //   dim3 dimUGrid(num_blocks, Batch, 1);
+    //   dim3 dimUBlock(UNROLL_BLOCK_SIZE, 1, 1);
+    //   unroll_Kernel<<<dimUGrid, dimUBlock>>>(Channel, Height, Width, K, device_input, X_unrolled_device, 0);
 
-      dim3 dimGrid(ceil((float)W_unroll/TILE_WIDTH), ceil((float)Map_out/TILE_WIDTH), Batch);
-      dim3 dimBlock(TILE_WIDTH, TILE_WIDTH, 1);
-      matrixMultiply<<<dimGrid, dimBlock>>>(device_mask, X_unrolled_device, device_output, Map_out, Channel*K*K, H_unroll, W_unroll, Map_out, W_unroll);
-      gpuErrchk( cudaPeekAtLastError() );
-      gpuErrchk( cudaDeviceSynchronize() );
-      cudaDeviceSynchronize();
+    //   dim3 dimGrid(ceil((float)W_unroll/TILE_WIDTH), ceil((float)Map_out/TILE_WIDTH), Batch);
+    //   dim3 dimBlock(TILE_WIDTH, TILE_WIDTH, 1);
+    //   matrixMultiply<<<dimGrid, dimBlock>>>(device_mask, X_unrolled_device, device_output, Map_out, Channel*K*K, H_unroll, W_unroll, Map_out, W_unroll);
+    //   gpuErrchk( cudaPeekAtLastError() );
+    //   gpuErrchk( cudaDeviceSynchronize() );
+    //   cudaDeviceSynchronize();
 
-      cudaFree(X_unrolled_device);
-    }
-    else {
+    //   cudaFree(X_unrolled_device);
+    // }
+    // else {
 
       gpuErrchk(cudaMalloc((void **)&X_unrolled_device, sizeof(float)*W_unroll*H_unroll));
 
@@ -531,7 +532,7 @@ __host__ void GPUInterface::conv_forward_gpu(float *device_output, const float *
       dim3 dimGrid(ceil((float)W_unroll/TILE_WIDTH), ceil((float)Map_out/TILE_WIDTH), 1);
       dim3 dimBlock(TILE_WIDTH, TILE_WIDTH, 1);
       for (int n = 0; n < Batch; n++) {
-        unroll_Kernel<<<dimUGrid, dimUBlock>>>(Channel, Height, Width, K, device_input, X_unrolled_device);
+        unroll_Kernel<<<dimUGrid, dimUBlock>>>(Channel, Height, Width, K, device_input, X_unrolled_device, n);
         matrixMultiply<<<dimGrid, dimBlock>>>(device_mask, X_unrolled_device, device_output, Map_out, Channel*K*K, H_unroll, W_unroll, Map_out, W_unroll);
       }
       gpuErrchk( cudaPeekAtLastError() );
@@ -539,7 +540,7 @@ __host__ void GPUInterface::conv_forward_gpu(float *device_output, const float *
       cudaDeviceSynchronize();
 
       cudaFree(X_unrolled_device);
-    }
+    // }
 
 
 
@@ -555,24 +556,24 @@ __host__ void GPUInterface::conv_forward_gpu(float *device_output, const float *
     float* X_unrolled_device;
 
     /* unfortunately with a batch size of 10000, a lot of memory must be allocated for the batches to be parallelized, thus they must be done serially */
-    if (Batch < 10000) {
+    // if (Batch < 10000) {
 
-      gpuErrchk(cudaMalloc((void **)&X_unrolled_device, sizeof(float)*W_unroll*H_unroll*Batch));
+    //   gpuErrchk(cudaMalloc((void **)&X_unrolled_device, sizeof(float)*W_unroll*H_unroll*Batch));
 
-      int num_blocks = ceil((float)(H_out*W_out*Channel) / UNROLL_BLOCK_SIZE);
-      dim3 dimUGrid(num_blocks, Batch, 1);
-      dim3 dimUBlock(UNROLL_BLOCK_SIZE, 1, 1);
-      unroll_Kernel<<<dimUGrid, dimUBlock>>>(Channel, Height, Width, K, device_input, X_unrolled_device);
+    //   int num_blocks = ceil((float)(H_out*W_out*Channel) / UNROLL_BLOCK_SIZE);
+    //   dim3 dimUGrid(num_blocks, Batch, 1);
+    //   dim3 dimUBlock(UNROLL_BLOCK_SIZE, 1, 1);
+    //   unroll_Kernel<<<dimUGrid, dimUBlock>>>(Channel, Height, Width, K, device_input, X_unrolled_device);
 
-      dim3 dimGrid(ceil(Map_out / (1.0*TILE_SZ_A)), ceil(W_unroll / (1.0*TILE_SZ_B)), Batch);
-      dim3 dimBlock(TILE_SZ_A, 1, 1);
-      matrixRegisterTiling<<<dimGrid, dimBlock>>>(device_output, device_mask, X_unrolled_device, Map_out, Channel*K*K, H_out*W_out, K, Channel, Height, Width);
+    //   dim3 dimGrid(ceil(Map_out / (1.0*TILE_SZ_A)), ceil(W_unroll / (1.0*TILE_SZ_B)), Batch);
+    //   dim3 dimBlock(TILE_SZ_A, 1, 1);
+    //   matrixRegisterTiling<<<dimGrid, dimBlock>>>(device_output, device_mask, X_unrolled_device, Map_out, Channel*K*K, H_out*W_out, K, Channel, Height, Width);
 
-      cudaDeviceSynchronize();
+    //   cudaDeviceSynchronize();
 
-      cudaFree(X_unrolled_device);
-    }
-    else {
+    //   cudaFree(X_unrolled_device);
+    // }
+    // else {
 
       gpuErrchk(cudaMalloc((void **)&X_unrolled_device, sizeof(float)*W_unroll*H_unroll));
 
@@ -583,14 +584,14 @@ __host__ void GPUInterface::conv_forward_gpu(float *device_output, const float *
       dim3 dimBlock(TILE_SZ_A, 1, 1);
 
       for (int n = 0; n < Batch; n++) {
-        unroll_Kernel<<<dimUGrid, dimUBlock>>>(Channel, Height, Width, K, device_input, X_unrolled_device);
+        unroll_Kernel<<<dimUGrid, dimUBlock>>>(Channel, Height, Width, K, device_input, X_unrolled_device, n);
         matrixRegisterTiling<<<dimGrid, dimBlock>>>(device_output, device_mask, X_unrolled_device, Map_out, Channel*K*K, H_out*W_out, K, Channel, Height, Width);
       }
 
       cudaDeviceSynchronize();
 
       cudaFree(X_unrolled_device);
-    }
+    // }
 
     #endif
 
