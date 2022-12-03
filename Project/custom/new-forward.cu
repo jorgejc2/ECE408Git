@@ -160,7 +160,7 @@ __global__ void unroll_Kernel (int C, int H, int W, int K, const float* X, float
 __global__ void matrixMultiply(const float* A, const float* B, float* __restrict__ C, int numARows,
                                int numAColumns, int numBRows,
                                int numBColumns, int numCRows,
-                               int numCColumns) {
+                               int numCColumns, int curr_batch) {
   //@@ Insert code to implement matrix multiplication here
 
   int tx = threadIdx.x;
@@ -168,7 +168,7 @@ __global__ void matrixMultiply(const float* A, const float* B, float* __restrict
   int bx = blockIdx.x;
   int by = blockIdx.y;
 
-  int currBatch = blockIdx.z;
+  int currBatch = curr_batch;
 
   /* used in my tile multiplication */
   __shared__ float Mds[TILE_WIDTH][TILE_WIDTH];
@@ -222,7 +222,7 @@ __global__ void matrixMultiply(const float* A, const float* B, float* __restrict
 __global__ void matrixRegisterTiling(float * __restrict__ c, //<! [out] and MxN matrix
                        const float *a,        //<! [in] an MxK matrix
                        const float *b,        //<! [in] an KxN matrix
-                       const int M, const int K, const int N, const int K_in, const int Channel, int H, int W) {
+                       const int M, const int K, const int N, const int K_in, const int Channel, int H, int W, int currBatch) {
 
 // Macros for accessing flattened matrices
 #define A(i1, i0) a[(i1) * K + (i0)] // this will be the mask
@@ -231,7 +231,13 @@ __global__ void matrixRegisterTiling(float * __restrict__ c, //<! [out] and MxN 
 
 #define in_4d(i3, i2, i1, i0) b[(i3) * (Channel * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
 
-int curr_batch = blockIdx.z;
+#if (OPTIMIZATION == 4)
+  int curr_batch = currBatch;
+#endif
+
+#if (OPTIMIZATION == 5 || OPTIMIZATION == 6 )
+  int curr_batch = blockIdx.z;
+#endif
 
   // Shared memory for tiling input B array
   __shared__ float B_s[TILE_SZ_RATIO][TILE_SZ_B];
@@ -533,7 +539,7 @@ __host__ void GPUInterface::conv_forward_gpu(float *device_output, const float *
       dim3 dimBlock(TILE_WIDTH, TILE_WIDTH, 1);
       for (int n = 0; n < Batch; n++) {
         unroll_Kernel<<<dimUGrid, dimUBlock>>>(Channel, Height, Width, K, device_input, X_unrolled_device, n);
-        matrixMultiply<<<dimGrid, dimBlock>>>(device_mask, X_unrolled_device, device_output, Map_out, Channel*K*K, H_unroll, W_unroll, Map_out, W_unroll);
+        matrixMultiply<<<dimGrid, dimBlock>>>(device_mask, X_unrolled_device, device_output, Map_out, Channel*K*K, H_unroll, W_unroll, Map_out, W_unroll, n);
       }
       gpuErrchk( cudaPeekAtLastError() );
       gpuErrchk( cudaDeviceSynchronize() );
@@ -585,7 +591,7 @@ __host__ void GPUInterface::conv_forward_gpu(float *device_output, const float *
 
       for (int n = 0; n < Batch; n++) {
         unroll_Kernel<<<dimUGrid, dimUBlock>>>(Channel, Height, Width, K, device_input, X_unrolled_device, n);
-        matrixRegisterTiling<<<dimGrid, dimBlock>>>(device_output, device_mask, X_unrolled_device, Map_out, Channel*K*K, H_out*W_out, K, Channel, Height, Width);
+        matrixRegisterTiling<<<dimGrid, dimBlock>>>(device_output, device_mask, X_unrolled_device, Map_out, Channel*K*K, H_out*W_out, K, Channel, Height, Width, n);
       }
 
       cudaDeviceSynchronize();
@@ -605,7 +611,7 @@ __host__ void GPUInterface::conv_forward_gpu(float *device_output, const float *
     dim3 dimGrid(ceil(Map_out / (1.0*TILE_SZ_A)), ceil(W_unroll / (1.0*TILE_SZ_B)), Batch);
     dim3 dimBlock(TILE_SZ_A, 1, 1);
 
-    matrixRegisterTiling<<<dimGrid, dimBlock>>>(device_output, device_mask, device_input, Map_out, Channel*K*K, H_out*W_out, K, Channel, Height, Width);
+    matrixRegisterTiling<<<dimGrid, dimBlock>>>(device_output, device_mask, device_input, Map_out, Channel*K*K, H_out*W_out, K, Channel, Height, Width, 0);
 
     #endif
 
@@ -639,7 +645,7 @@ __host__ void GPUInterface::conv_forward_gpu(float *device_output, const float *
     }else{
       dim3 dimGrid(ceil(Map_out / (1.0*TILE_SZ_A)), ceil(W_unroll / (1.0*TILE_SZ_B)), Batch);
       dim3 dimBlock(TILE_SZ_A, 1, 1);
-      matrixRegisterTiling<<<dimGrid, dimBlock>>>(device_output, device_mask, device_input, Map_out, Channel*K*K, H_out*W_out, K, Channel, Height, Width);
+      matrixRegisterTiling<<<dimGrid, dimBlock>>>(device_output, device_mask, device_input, Map_out, Channel*K*K, H_out*W_out, K, Channel, Height, Width, 0);
     }
 
     #endif
