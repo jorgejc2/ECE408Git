@@ -15,7 +15,7 @@
 ** OPTIMIZATION 5: Kernel Fusion for OPTIMIZATION 4
 ** OPTIMIZATION 6: Multiple Kernel Implementations for Different Layer Sizes
 */
-#define OPTIMIZATION 3  // select an optimization 0 to 6
+#define OPTIMIZATION 4  // select an optimization 0 to 6
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
@@ -223,7 +223,7 @@ __global__ void matrixRegisterTiling(float * __restrict__ c, //<! [out] and MxN 
 
 // Macros for accessing flattened matrices
 #define A(i1, i0) a[(i1) * K + (i0)] // this will be the mask
-#define B(i2, i1, i0) b[(i2) * (K*N) + (i1)*N + (i0)]
+#define B(i1, i0) b[(i1)*N + (i0)]
 #define C(i2, i1, i0) c[(i2)*(M*N) + (i1)*N + (i0)]
 
 #define in_4d(i3, i2, i1, i0) b[(i3) * (Channel * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
@@ -274,7 +274,7 @@ __global__ void matrixRegisterTiling(float * __restrict__ c, //<! [out] and MxN 
         #endif
 
         #if (OPTIMIZATION == 4)
-        B_s[i][j] = B(curr_batch, tileIdx * TILE_SZ_RATIO + i, col + j);
+        B_s[i][j] = B(tileIdx * TILE_SZ_RATIO + i, col + j);
         #endif
 
     } else {
